@@ -1,14 +1,15 @@
 //! Support for computing Merkle trees.
 use crate::{
     lib::*,
-    merkleization::{hasher::hash_chunks, MerkleizationError as Error, Node, BYTES_PER_CHUNK},
+    merkleization::{
+        hasher::{hash_chunks, hash_layer},
+        MerkleizationError as Error, Node, BYTES_PER_CHUNK,
+    },
     ser::Serialize,
     GeneralizedIndex,
 };
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
-
-use super::hasher::hash_layer;
 
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports
 // decoration.
@@ -98,81 +99,62 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
     debug_assert!((leaf_count.trailing_zeros() as usize) < MAX_MERKLE_TREE_DEPTH);
 
     let chunk_count = chunks.len() / BYTES_PER_CHUNK;
-
     if chunk_count == 0 {
         let depth = leaf_count.trailing_zeros() as usize;
         let zero_hash_slice = &CONTEXT[depth];
         return Ok(Node::from_slice(zero_hash_slice));
     }
 
-    let mut layer = chunks.to_vec();
-
     let depth = leaf_count.trailing_zeros() as usize;
-
-    merkleize_flat_array(&mut layer, depth, &CONTEXT)
+    merkleize_flat_array(chunks, depth, &CONTEXT)
 }
 
-fn merkleize_flat_array(
-    layer: &mut Vec<u8>,
-    depth: usize,
-    zero_hashes: &Context,
-) -> Result<Node, Error> {
-    if depth == 0 && layer.len() == BYTES_PER_CHUNK {
-        return Ok(Node::from_slice(&layer[0..BYTES_PER_CHUNK]));
+fn merkleize_flat_array(chunks: &[u8], depth: usize, zero_hashes: &Context) -> Result<Node, Error> {
+    if depth == 0 && chunks.len() == BYTES_PER_CHUNK {
+        return Ok(Node::from_slice(&chunks[0..BYTES_PER_CHUNK]));
     }
 
-    if layer.is_empty() {
+    if chunks.is_empty() {
         return Err(Error::InvalidGeneralizedIndex);
     }
 
-    let max_nodes = layer.len() / BYTES_PER_CHUNK;
+    let max_nodes = chunks.len() / BYTES_PER_CHUNK;
     let mut height = 0;
 
     // Preallocate buffers
     let max_input_size = ((max_nodes + 1) / 2) * 2 * BYTES_PER_CHUNK;
     let mut input = vec![0u8; max_input_size];
-    let mut parent_layer = vec![0u8; max_nodes * BYTES_PER_CHUNK];
+    let mut output = vec![0u8; max_nodes * BYTES_PER_CHUNK];
+    let mut current_layer = chunks;
 
-    while layer.len() > BYTES_PER_CHUNK || height < depth {
-        let num_nodes = layer.len() / BYTES_PER_CHUNK;
+    while current_layer.len() > BYTES_PER_CHUNK || height < depth {
+        let num_nodes = current_layer.len() / BYTES_PER_CHUNK;
         let parent_count = (num_nodes + 1) / 2;
-
         let mut input_len = 0;
 
         for i in (0..num_nodes).step_by(2) {
-            let left_offset = i * BYTES_PER_CHUNK;
-            let left = &layer[left_offset..left_offset + BYTES_PER_CHUNK];
-
+            let left = &current_layer[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
             let right = if i + 1 < num_nodes {
-                let right_offset = (i + 1) * BYTES_PER_CHUNK;
-                &layer[right_offset..right_offset + BYTES_PER_CHUNK]
+                &current_layer[(i + 1) * BYTES_PER_CHUNK..(i + 2) * BYTES_PER_CHUNK]
             } else {
                 &zero_hashes[height]
             };
 
-            // Write directly into `input`
             input[input_len..input_len + BYTES_PER_CHUNK].copy_from_slice(left);
-            input_len += BYTES_PER_CHUNK;
-            input[input_len..input_len + BYTES_PER_CHUNK].copy_from_slice(right);
-            input_len += BYTES_PER_CHUNK;
+            input[input_len + BYTES_PER_CHUNK..input_len + 2 * BYTES_PER_CHUNK]
+                .copy_from_slice(right);
+            input_len += 2 * BYTES_PER_CHUNK;
         }
 
-        // Prepare output buffer slice
-        let output_len = parent_count * BYTES_PER_CHUNK;
-        let output = &mut parent_layer[0..output_len];
-
         // Hash the layer
-        hash_layer(output, &input[0..input_len], parent_count);
+        let output_slice = &mut output[0..parent_count * BYTES_PER_CHUNK];
+        hash_layer(output_slice, &input[0..input_len], parent_count);
 
-        // Swap `layer` and `parent_layer` buffers
-        std::mem::swap(layer, &mut parent_layer);
-        // Adjust the length of `layer` to `output_len`
-        layer.truncate(output_len);
-
+        current_layer = output_slice;
         height += 1;
     }
 
-    Ok(Node::from_slice(&layer[0..BYTES_PER_CHUNK]))
+    Ok(Node::from_slice(&current_layer[0..BYTES_PER_CHUNK]))
 }
 
 // Return the root of the Merklization of a binary tree formed from `chunks`.
