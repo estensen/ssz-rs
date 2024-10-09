@@ -118,33 +118,31 @@ pub fn merkleize_chunks_with_virtual_padding(
     leaf_count: usize,
 ) -> Result<Node, Error> {
     debug_assert!(chunks.len() % BYTES_PER_CHUNK == 0);
+    // NOTE: This also asserts that leaf_count != 0
     debug_assert!(leaf_count.next_power_of_two() == leaf_count);
+    // SAFETY: this holds as long as leaf_count != 0 and usize is no longer than u64
     debug_assert!((leaf_count.trailing_zeros() as usize) < MAX_MERKLE_TREE_DEPTH);
 
     let chunk_count = chunks.len() / BYTES_PER_CHUNK;
+    let depth = leaf_count.trailing_zeros() as usize;
+
     if chunk_count == 0 {
-        let depth = leaf_count.trailing_zeros() as usize;
+        // SAFETY: checked subtraction is unnecessary, as height >= 1; qed
         let zero_hash_slice = &CONTEXT[depth];
+        // SAFETY: index is safe while depth == leaf_count.trailing_zeros() < MAX_MERKLE_TREE_DEPTH;
+        // qed
         return Ok(Node::from_slice(zero_hash_slice));
     }
 
-    let depth = leaf_count.trailing_zeros() as usize;
-    merkleize_flat_array_optimized(chunks, depth, &CONTEXT)
+    merkleize_flat_array_optimized(chunks, depth)
 }
 
-fn merkleize_flat_array_optimized(
-    chunks: &[u8],
-    depth: usize,
-    zero_hashes: &Context,
-) -> Result<Node, Error> {
+fn merkleize_flat_array_optimized(chunks: &[u8], depth: usize) -> Result<Node, Error> {
     if depth == 0 && chunks.len() == BYTES_PER_CHUNK {
         return Ok(Node::from_slice(&chunks[0..BYTES_PER_CHUNK]));
     }
 
-    if chunks.is_empty() {
-        return Err(Error::InvalidGeneralizedIndex);
-    }
-
+    // Init current and next layers using pooled vectors
     let mut current_layer = get_pooled_vec();
     current_layer.extend_from_slice(chunks);
     let mut next_layer = get_pooled_vec();
@@ -154,19 +152,23 @@ fn merkleize_flat_array_optimized(
         let num_nodes = current_layer.len() / BYTES_PER_CHUNK;
         let parent_count = (num_nodes + 1) / 2;
 
+        // Prepare next layer
         next_layer.clear();
         next_layer.resize(parent_count * BYTES_PER_CHUNK, 0);
 
+        // If odd number of nodes pad with zero hash
         if num_nodes % 2 == 1 {
-            current_layer.extend_from_slice(&zero_hashes[height]);
+            current_layer.extend_from_slice(&CONTEXT[height]);
         }
 
         hash_layer(&mut next_layer, &current_layer, parent_count);
 
+        // Swap current and next layers
         std::mem::swap(&mut current_layer, &mut next_layer);
         height += 1;
     }
 
+    // Extract root from the final layer
     let result = Node::from_slice(&current_layer[0..BYTES_PER_CHUNK]);
 
     // Return vectors to the pool
