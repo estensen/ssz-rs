@@ -56,3 +56,33 @@ pub fn hash_chunks(left: impl AsRef<[u8]>, right: impl AsRef<[u8]>) -> [u8; BYTE
     #[cfg(not(feature = "hashtree"))]
     return hash_chunks_sha256(left, right);
 }
+
+#[inline]
+#[cfg(feature = "hashtree")]
+fn hash_layer_hashtree(output: &mut [u8], input: &[u8], count: usize) {
+    INIT.call_once(|| {
+        hashtree::init();
+    });
+    hashtree::hash(output, input, count);
+}
+
+#[inline]
+#[cfg(not(feature = "hashtree"))]
+fn hash_layer_sha256(output: &mut [u8], input: &[u8], count: usize) {
+    for i in 0..count {
+        let chunk = &input[i * 64..(i + 1) * 64];
+        let mut hasher = Sha256::new();
+        hasher.update(chunk);
+        let hash = hasher.finalize_reset();
+        output[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK].copy_from_slice(&hash);
+    }
+}
+
+#[inline]
+pub fn hash_layer(output: &mut [u8], input: &[u8], count: usize) {
+    #[cfg(feature = "hashtree")]
+    hash_layer_hashtree(output, input, count);
+
+    #[cfg(not(feature = "hashtree"))]
+    hash_layer_sha256(output, input, count);
+}

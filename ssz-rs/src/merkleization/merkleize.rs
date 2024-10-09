@@ -8,6 +8,8 @@ use crate::{
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
 
+use super::hasher::hash_layer;
+
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports
 // decoration.
 const INNER_ROOT_GENERALIZED_INDEX: GeneralizedIndex = 2;
@@ -92,96 +94,84 @@ include!(concat!(env!("OUT_DIR"), "/context.rs"));
 /// Invariant: `leaf_count.trailing_zeros() < MAX_MERKLE_TREE_DEPTH`
 fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Result<Node, Error> {
     debug_assert!(chunks.len() % BYTES_PER_CHUNK == 0);
-    // NOTE: This also asserts that leaf_count != 0
     debug_assert!(leaf_count.next_power_of_two() == leaf_count);
-    // SAFETY: this holds as long as leaf_count != 0 and usize is no longer than u64
     debug_assert!((leaf_count.trailing_zeros() as usize) < MAX_MERKLE_TREE_DEPTH);
 
     let chunk_count = chunks.len() / BYTES_PER_CHUNK;
-    let height = leaf_count.trailing_zeros() + 1;
 
     if chunk_count == 0 {
-        // SAFETY: checked subtraction is unnecessary, as height >= 1; qed
-        let depth = height - 1;
-        // SAFETY: index is safe while depth == leaf_count.trailing_zeros() < MAX_MERKLE_TREE_DEPTH;
-        // qed
-        return Ok(CONTEXT[depth as usize].try_into().expect("can produce a single root chunk"));
+        let depth = leaf_count.trailing_zeros() as usize;
+        let zero_hash_slice = &CONTEXT[depth];
+        return Ok(Node::from_slice(zero_hash_slice));
     }
 
-    let mut layer = chunks.to_vec();
-    // SAFETY: checked subtraction is unnecessary, as we return early when chunk_count == 0; qed
-    let mut last_index = chunk_count - 1;
-    // for each layer of the tree, starting from the bottom and walking up to the root:
-    for k in (1..height).rev() {
-        // for each pair of nodes in this layer:
-        for i in (0..2usize.pow(k)).step_by(2) {
-            let parent_index = i / 2;
-            let (parent, left, right) = match i.cmp(&last_index) {
-                Ordering::Less => {
-                    // SAFETY: index is safe because (i+1)*BYTES_PER_CHUNK < layer.len():
-                    // i < last_index == chunk_count - 1 == (layer.len() / BYTES_PER_CHUNK) - 1
-                    // so i+1 < layer.len() / BYTES_PER_CHUNK
-                    // so (i+1)*BYTES_PER_CHUNK < layer.len(); qed
-                    let focus =
-                        &mut layer[parent_index * BYTES_PER_CHUNK..(i + 2) * BYTES_PER_CHUNK];
-                    // SAFETY: checked subtraction is unnecessary:
-                    // focus.len() = (i + 2 - parent_index) * BYTES_PER_CHUNK
-                    // and
-                    // i >= parent_index
-                    // so focus.len() >= 2 * BYTES_PER_CHUNK; qed
-                    let children_index = focus.len() - 2 * BYTES_PER_CHUNK;
-                    let (parent, children) = focus.split_at_mut(children_index);
-                    let (left, right) = children.split_at_mut(BYTES_PER_CHUNK);
+    let mut layer: Vec<[u8; BYTES_PER_CHUNK]> = chunks
+        .chunks_exact(BYTES_PER_CHUNK)
+        .map(|chunk| {
+            let mut array = [0u8; BYTES_PER_CHUNK];
+            array.copy_from_slice(chunk);
+            array
+        })
+        .collect();
 
-                    // NOTE: we do not need mutability on `right` here so drop that capability
-                    (parent, left, &*right)
-                }
-                Ordering::Equal => {
-                    // SAFETY: index is safe because i*BYTES_PER_CHUNK < layer.len():
-                    // i*BYTES_PER_CHUNK < (i+1)*BYTES_PER_CHUNK < layer.len()
-                    // (see previous case); qed
-                    let focus =
-                        &mut layer[parent_index * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
-                    // SAFETY: checked subtraction is unnecessary:
-                    // focus.len() = (i + 1 - parent_index) * BYTES_PER_CHUNK
-                    // and
-                    // i >= parent_index
-                    // so focus.len() >= BYTES_PER_CHUNK; qed
-                    let children_index = focus.len() - BYTES_PER_CHUNK;
-                    // NOTE: left.len() == BYTES_PER_CHUNK
-                    let (parent, left) = focus.split_at_mut(children_index);
-                    // SAFETY: checked subtraction is unnecessary:
-                    // k <= height - 1
-                    // so depth >= height - (height - 1) - 1
-                    //           = 0; qed
-                    let depth = height - k - 1;
-                    // SAFETY: index is safe because depth < CONTEXT.len():
-                    // depth <= height - 1 == leaf_count.trailing_zeros()
-                    // leaf_count.trailing_zeros() < MAX_MERKLE_TREE_DEPTH == CONTEXT.len(); qed
-                    let right = &CONTEXT[depth as usize];
-                    (parent, left, right)
-                }
-                _ => break,
-            };
-            if i == 0 {
-                // NOTE: nodes share memory here and so we can't use the `hash_nodes` utility
-                // as the disjunct nature is reflect in that functions type signature
-                // so instead we will just replicate here.
-                left.copy_from_slice(&hash_chunks(&left, right));
+    let depth = leaf_count.trailing_zeros() as usize;
+
+    merkleize_flat_array(&mut layer, depth, &CONTEXT)
+}
+
+fn merkleize_flat_array(
+    layer: &mut Vec<[u8; BYTES_PER_CHUNK]>,
+    depth: usize,
+    zero_hashes: &Context,
+) -> Result<Node, Error> {
+    if depth == 0 && layer.len() == 1 {
+        return Ok(Node::from_slice(&layer[0]));
+    }
+
+    if layer.is_empty() {
+        return Err(Error::InvalidGeneralizedIndex); // Use an existing error variant
+    }
+
+    let mut height = 0;
+
+    while layer.len() > 1 || height < depth {
+        let num_nodes = layer.len();
+        let parent_count = (num_nodes + 1) / 2;
+
+        let mut input = Vec::with_capacity(parent_count * 64);
+
+        for i in (0..num_nodes).step_by(2) {
+            let left = layer[i];
+            let right = if i + 1 < num_nodes {
+                layer[i + 1]
             } else {
-                // SAFETY: index is safe because parent.len() % BYTES_PER_CHUNK == 0 and
-                // parent isn't empty; qed
-                hash_nodes(left, right, &mut parent[..BYTES_PER_CHUNK]);
-            }
+                let zero_hash_slice = &zero_hashes[height];
+                let mut array = [0u8; BYTES_PER_CHUNK];
+                array.copy_from_slice(zero_hash_slice);
+                array
+            };
+
+            input.extend_from_slice(&left);
+            input.extend_from_slice(&right);
         }
-        last_index /= 2;
+
+        let mut parent_layer = vec![0u8; parent_count * BYTES_PER_CHUNK];
+        hash_layer(&mut parent_layer, &input, parent_count);
+
+        // Update layer for next iteration
+        *layer = parent_layer
+            .chunks_exact(BYTES_PER_CHUNK)
+            .map(|chunk| {
+                let mut array = [0u8; BYTES_PER_CHUNK];
+                array.copy_from_slice(chunk);
+                array
+            })
+            .collect();
+
+        height += 1;
     }
 
-    // SAFETY: index is safe because layer.len() >= BYTES_PER_CHUNK:
-    // layer.len() == chunks.len()
-    // chunks.len() % BYTES_PER_CHUNK == 0 and chunks.len() != 0 (because chunk_count != 0)
-    // so chunks.len() >= BYTES_PER_CHUNK; qed
-    Ok(layer[..BYTES_PER_CHUNK].try_into().expect("can produce a single root chunk"))
+    Ok(Node::from_slice(&layer[0]))
 }
 
 // Return the root of the Merklization of a binary tree formed from `chunks`.

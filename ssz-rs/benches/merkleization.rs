@@ -31,14 +31,6 @@ fn bench_merkleization(c: &mut Criterion) {
             let _ = outer.hash_tree_root().unwrap();
         })
     });
-
-    // let root = outer.hash_tree_root().unwrap();
-    let index = PathElement::from(1);
-    c.bench_function(&generate_id("generate_proof"), |b| {
-        b.iter(|| {
-            let (_proof, _witness) = outer.prove(&[index.clone()]).unwrap();
-        })
-    });
 }
 
 criterion_group!(benches, bench_merkleization,);
