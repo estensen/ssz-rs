@@ -105,14 +105,7 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
         return Ok(Node::from_slice(zero_hash_slice));
     }
 
-    let mut layer: Vec<[u8; BYTES_PER_CHUNK]> = chunks
-        .chunks_exact(BYTES_PER_CHUNK)
-        .map(|chunk| {
-            let mut array = [0u8; BYTES_PER_CHUNK];
-            array.copy_from_slice(chunk);
-            array
-        })
-        .collect();
+    let mut layer = chunks.to_vec();
 
     let depth = leaf_count.trailing_zeros() as usize;
 
@@ -120,58 +113,53 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
 }
 
 fn merkleize_flat_array(
-    layer: &mut Vec<[u8; BYTES_PER_CHUNK]>,
+    layer: &mut Vec<u8>,
     depth: usize,
     zero_hashes: &Context,
 ) -> Result<Node, Error> {
-    if depth == 0 && layer.len() == 1 {
-        return Ok(Node::from_slice(&layer[0]));
+    if depth == 0 && layer.len() == BYTES_PER_CHUNK {
+        return Ok(Node::from_slice(&layer[0..BYTES_PER_CHUNK]));
     }
 
     if layer.is_empty() {
-        return Err(Error::InvalidGeneralizedIndex); // Use an existing error variant
+        return Err(Error::InvalidGeneralizedIndex);
     }
 
     let mut height = 0;
+    let mut input = Vec::new();
+    let mut parent_layer = Vec::new();
 
-    while layer.len() > 1 || height < depth {
-        let num_nodes = layer.len();
+    while layer.len() > BYTES_PER_CHUNK || height < depth {
+        let num_nodes = layer.len() / BYTES_PER_CHUNK;
         let parent_count = (num_nodes + 1) / 2;
 
-        let mut input = Vec::with_capacity(parent_count * 64);
+        input.clear();
+        input.reserve_exact(parent_count * 64);
 
         for i in (0..num_nodes).step_by(2) {
-            let left = layer[i];
+            let left = &layer[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
             let right = if i + 1 < num_nodes {
-                layer[i + 1]
+                &layer[(i + 1) * BYTES_PER_CHUNK..(i + 2) * BYTES_PER_CHUNK]
             } else {
-                let zero_hash_slice = &zero_hashes[height];
-                let mut array = [0u8; BYTES_PER_CHUNK];
-                array.copy_from_slice(zero_hash_slice);
-                array
+                &zero_hashes[height]
             };
 
-            input.extend_from_slice(&left);
-            input.extend_from_slice(&right);
+            input.extend_from_slice(left);
+            input.extend_from_slice(right);
         }
 
-        let mut parent_layer = vec![0u8; parent_count * BYTES_PER_CHUNK];
+        parent_layer.clear();
+        parent_layer.extend_from_slice(&vec![0u8; parent_count * BYTES_PER_CHUNK]);
+
         hash_layer(&mut parent_layer, &input, parent_count);
 
-        // Update layer for next iteration
-        *layer = parent_layer
-            .chunks_exact(BYTES_PER_CHUNK)
-            .map(|chunk| {
-                let mut array = [0u8; BYTES_PER_CHUNK];
-                array.copy_from_slice(chunk);
-                array
-            })
-            .collect();
+        // Swap `layer` and `parent_layer`
+        std::mem::swap(layer, &mut parent_layer);
 
         height += 1;
     }
 
-    Ok(Node::from_slice(&layer[0]))
+    Ok(Node::from_slice(&layer[0..BYTES_PER_CHUNK]))
 }
 
 // Return the root of the Merklization of a binary tree formed from `chunks`.
