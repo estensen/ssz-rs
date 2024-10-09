@@ -125,36 +125,49 @@ fn merkleize_flat_array(
         return Err(Error::InvalidGeneralizedIndex);
     }
 
+    let max_nodes = layer.len() / BYTES_PER_CHUNK;
     let mut height = 0;
-    let mut input = Vec::new();
-    let mut parent_layer = Vec::new();
+
+    // Preallocate buffers
+    let max_input_size = ((max_nodes + 1) / 2) * 2 * BYTES_PER_CHUNK;
+    let mut input = vec![0u8; max_input_size];
+    let mut parent_layer = vec![0u8; max_nodes * BYTES_PER_CHUNK];
 
     while layer.len() > BYTES_PER_CHUNK || height < depth {
         let num_nodes = layer.len() / BYTES_PER_CHUNK;
         let parent_count = (num_nodes + 1) / 2;
 
-        input.clear();
-        input.reserve_exact(parent_count * 64);
+        let mut input_len = 0;
 
         for i in (0..num_nodes).step_by(2) {
-            let left = &layer[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
+            let left_offset = i * BYTES_PER_CHUNK;
+            let left = &layer[left_offset..left_offset + BYTES_PER_CHUNK];
+
             let right = if i + 1 < num_nodes {
-                &layer[(i + 1) * BYTES_PER_CHUNK..(i + 2) * BYTES_PER_CHUNK]
+                let right_offset = (i + 1) * BYTES_PER_CHUNK;
+                &layer[right_offset..right_offset + BYTES_PER_CHUNK]
             } else {
                 &zero_hashes[height]
             };
 
-            input.extend_from_slice(left);
-            input.extend_from_slice(right);
+            // Write directly into `input`
+            input[input_len..input_len + BYTES_PER_CHUNK].copy_from_slice(left);
+            input_len += BYTES_PER_CHUNK;
+            input[input_len..input_len + BYTES_PER_CHUNK].copy_from_slice(right);
+            input_len += BYTES_PER_CHUNK;
         }
 
-        parent_layer.clear();
-        parent_layer.extend_from_slice(&vec![0u8; parent_count * BYTES_PER_CHUNK]);
+        // Prepare output buffer slice
+        let output_len = parent_count * BYTES_PER_CHUNK;
+        let output = &mut parent_layer[0..output_len];
 
-        hash_layer(&mut parent_layer, &input, parent_count);
+        // Hash the layer
+        hash_layer(output, &input[0..input_len], parent_count);
 
-        // Swap `layer` and `parent_layer`
+        // Swap `layer` and `parent_layer` buffers
         std::mem::swap(layer, &mut parent_layer);
+        // Adjust the length of `layer` to `output_len`
+        layer.truncate(output_len);
 
         height += 1;
     }
