@@ -134,14 +134,6 @@ pub fn merkleize_chunks_with_virtual_padding(
         return Ok(Node::from_slice(zero_hash_slice));
     }
 
-    merkleize_flat_array_optimized(chunks, depth)
-}
-
-fn merkleize_flat_array_optimized(chunks: &[u8], depth: usize) -> Result<Node, Error> {
-    if depth == 0 && chunks.len() == BYTES_PER_CHUNK {
-        return Ok(Node::from_slice(&chunks[0..BYTES_PER_CHUNK]));
-    }
-
     // Init current and next layers using pooled vectors
     let mut current_layer = get_pooled_vec();
     current_layer.extend_from_slice(chunks);
