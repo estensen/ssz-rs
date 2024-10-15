@@ -1,5 +1,4 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use ssz_rs::{PathElement, Prove};
 
 fn generate_id(name: &str) -> String {
     let tag = if cfg!(feature = "hashtree") {

@@ -33,9 +33,16 @@ thread_local! {
     static LAYER_POOL: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
 }
 
-fn get_pooled_vec() -> Vec<u8> {
-    LAYER_POOL
-        .with(|pool| pool.borrow_mut().pop().unwrap_or_else(|| Vec::with_capacity(BYTES_PER_CHUNK)))
+fn get_pooled_vec(capacity: usize) -> Vec<u8> {
+    LAYER_POOL.with(|pool| {
+        pool.borrow_mut()
+            .pop()
+            .map(|mut vec| {
+                vec.reserve(capacity);
+                vec
+            })
+            .unwrap_or_else(|| Vec::with_capacity(capacity))
+    })
 }
 
 fn return_vec_to_pool(mut vec: Vec<u8>) {
@@ -135,9 +142,12 @@ pub fn merkleize_chunks_with_virtual_padding(
     }
 
     // Init current and next layers using pooled vectors
-    let mut current_layer = get_pooled_vec();
+    let max_capacity = chunks.len();
+
+    let mut current_layer = get_pooled_vec(max_capacity);
     current_layer.extend_from_slice(chunks);
-    let mut next_layer = get_pooled_vec();
+
+    let mut next_layer = get_pooled_vec(max_capacity / 2);
 
     let mut height = 0;
     while current_layer.len() > BYTES_PER_CHUNK || height < depth {
