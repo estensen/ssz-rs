@@ -47,7 +47,9 @@ pub fn hash_pairs_bulk(in_pairs: &[u8], out_hashes: &mut [u8]) {
 
     #[cfg(feature = "hashtree")]
     {
-        INIT.call_once(|| { hashtree::init(); });
+        INIT.call_once(|| {
+            hashtree::init();
+        });
         hashtree::hash(out_hashes, in_pairs, in_pairs.len() / 64);
         return;
     }

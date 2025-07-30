@@ -92,62 +92,39 @@ include!(concat!(env!("OUT_DIR"), "/context.rs"));
 /// Invariant: `leaf_count.trailing_zeros() < MAX_MERKLE_TREE_DEPTH`
 fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Result<Node, Error> {
     debug_assert!(chunks.len() % BYTES_PER_CHUNK == 0);
-    debug_assert!(leaf_count.next_power_of_two() == leaf_count);
+    debug_assert!(leaf_count.is_power_of_two());
     let height = leaf_count.trailing_zeros() as usize;
-    debug_assert!(height < MAX_MERKLE_TREE_DEPTH);
 
     let chunk_count = chunks.len() / BYTES_PER_CHUNK;
-
     if chunk_count == 0 {
-        return Ok(CONTEXT[height].try_into().expect("can produce a single root chunk"));
+        return Ok(CONTEXT[height].try_into().unwrap());
     }
 
-    // Optimization: if there's only one chunk and the tree doesn't expand,
-    // it's already the root.
-    if chunk_count == 1 && height == 0 {
-        return Ok(chunks.try_into().expect("can produce a single root chunk"));
-    }
-
-    // Allocate `layer` with enough capacity to hold the initial chunks plus one
-    // potential padding chunk. This avoids reallocations when padding is added.
-    let mut layer = Vec::with_capacity(chunks.len() + BYTES_PER_CHUNK);
-    layer.extend_from_slice(chunks);
-
-    // Allocate `scratch` once with enough capacity to hold the largest intermediate layer.
-    // The next layer will have at most `(chunk_count / 2) + 1` nodes.
-    let scratch_cap = (chunk_count / 2 + 1) * BYTES_PER_CHUNK;
-    let mut scratch = Vec::with_capacity(scratch_cap);
+    // Allocate exactly twice and ping‑pong.
+    let mut buf_a = chunks.to_vec();
+    let mut buf_b: Vec<u8> = Vec::with_capacity(buf_a.len()); // grows downward each round
+    let mut in_buf = &mut buf_a;
+    let mut out_buf = &mut buf_b;
 
     for depth in 0..height {
-        let mut node_count = layer.len() / BYTES_PER_CHUNK;
-        if node_count <= 1 {
+        let mut nodes = in_buf.len() / BYTES_PER_CHUNK;
+        if nodes <= 1 {
             break;
         }
-
-        // If the layer has an odd number of nodes, pair the last node with a zero hash.
-        if node_count % 2 != 0 {
-            // This extend is unlikely to re-allocate due to the initial capacity reservation.
-            layer.extend_from_slice(&CONTEXT[depth]);
-            node_count += 1;
+        if nodes & 1 != 0 {
+            in_buf.extend_from_slice(&CONTEXT[depth]);
+            nodes += 1;
         }
 
-        let parent_count = node_count / 2;
-        let parent_byte_count = parent_count * BYTES_PER_CHUNK;
+        let parents = nodes / 2;
+        out_buf.resize(parents * BYTES_PER_CHUNK, 0);
+        hash_pairs_bulk(in_buf, out_buf);
 
-        // The `scratch` buffer is resized to be the exact size needed for the parent hashes.
-        // As its capacity is pre-allocated, this is typically a cheap operation.
-        scratch.resize(parent_byte_count, 0);
-        hash_pairs_bulk(&layer, &mut scratch);
-
-        // Swap the buffers. `layer` now holds the parent hashes for the next iteration.
-        // `scratch` now holds the data from the previous `layer`.
-        std::mem::swap(&mut layer, &mut scratch);
-        // Clear `scratch` to be used as the destination in the next iteration.
-        // This retains the allocated capacity for reuse.
-        scratch.clear();
+        // Next round: swap buffers, keep their capacity.
+        std::mem::swap(&mut in_buf, &mut out_buf);
     }
 
-    Ok(layer[..BYTES_PER_CHUNK].try_into().expect("can produce a single root chunk"))
+    Ok(in_buf[..BYTES_PER_CHUNK].try_into().unwrap())
 }
 
 // Return the root of the Merklization of a binary tree formed from `chunks`.
