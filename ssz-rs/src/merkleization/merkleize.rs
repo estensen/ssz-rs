@@ -83,9 +83,8 @@ include!(concat!(env!("OUT_DIR"), "/context.rs"));
 /// of two and this can be quite large for some types. "Zero" subtrees are virtualized to avoid the
 /// memory and computation cost of large trees with partially empty leaves.
 ///
-/// The implementation approach treats `chunks` as the bottom layer of a perfect binary tree
-/// and for each height performs the hashing required to compute the parent layer in place.
-/// This process is repated until the root is computed.
+/// The implementation uses an efficient two-buffer swapping approach to compute the root
+/// level-by-level, minimizing memory allocations.
 ///
 /// Invariant: `chunks.len() % BYTES_PER_CHUNK == 0`
 /// Invariant: `leaf_count.next_power_of_two() == leaf_count`
@@ -103,9 +102,21 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
         return Ok(CONTEXT[height].try_into().expect("can produce a single root chunk"));
     }
 
-    let mut layer = chunks.to_vec();
-    // Reusable buffer for gathering pairs to be hashed.
-    let mut scratch = Vec::new();
+    // Optimization: if there's only one chunk and the tree doesn't expand,
+    // it's already the root.
+    if chunk_count == 1 && height == 0 {
+        return Ok(chunks.try_into().expect("can produce a single root chunk"));
+    }
+
+    // Allocate `layer` with enough capacity to hold the initial chunks plus one
+    // potential padding chunk. This avoids reallocations when padding is added.
+    let mut layer = Vec::with_capacity(chunks.len() + BYTES_PER_CHUNK);
+    layer.extend_from_slice(chunks);
+
+    // Allocate `scratch` once with enough capacity to hold the largest intermediate layer.
+    // The next layer will have at most `(chunk_count / 2) + 1` nodes.
+    let scratch_cap = (chunk_count / 2 + 1) * BYTES_PER_CHUNK;
+    let mut scratch = Vec::with_capacity(scratch_cap);
 
     for depth in 0..height {
         let mut node_count = layer.len() / BYTES_PER_CHUNK;
@@ -115,6 +126,7 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
 
         // If the layer has an odd number of nodes, pair the last node with a zero hash.
         if node_count % 2 != 0 {
+            // This extend is unlikely to re-allocate due to the initial capacity reservation.
             layer.extend_from_slice(&CONTEXT[depth]);
             node_count += 1;
         }
@@ -122,15 +134,17 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
         let parent_count = node_count / 2;
         let parent_byte_count = parent_count * BYTES_PER_CHUNK;
 
-        // The layer is already contiguous, so we can hash it directly.
-        // For optimal performance, we could hash in-place if buffers don't alias,
-        // but using a scratch buffer is safer and often just as fast.
+        // The `scratch` buffer is resized to be the exact size needed for the parent hashes.
+        // As its capacity is pre-allocated, this is typically a cheap operation.
         scratch.resize(parent_byte_count, 0);
         hash_pairs_bulk(&layer, &mut scratch);
 
-        // The new layer is the buffer of parent hashes.
-        layer = scratch;
-        scratch = Vec::new(); // Reset scratch to allow `layer` to hold the memory.
+        // Swap the buffers. `layer` now holds the parent hashes for the next iteration.
+        // `scratch` now holds the data from the previous `layer`.
+        std::mem::swap(&mut layer, &mut scratch);
+        // Clear `scratch` to be used as the destination in the next iteration.
+        // This retains the allocated capacity for reuse.
+        scratch.clear();
     }
 
     Ok(layer[..BYTES_PER_CHUNK].try_into().expect("can produce a single root chunk"))
