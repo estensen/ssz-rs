@@ -52,6 +52,7 @@ where
     Ok(buffer)
 }
 
+#[inline(always)]
 fn hash_nodes(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>, out: &mut [u8]) {
     out.copy_from_slice(&hash_chunks(a, b));
 }
@@ -154,6 +155,7 @@ pub(crate) fn mix_in_length(root: Node, length: usize) -> Node {
     mix_in_decoration(root, length)
 }
 
+#[inline(always)]
 pub fn mix_in_selector(root: Node, selector: usize) -> Node {
     mix_in_decoration(root, selector)
 }
