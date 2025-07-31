@@ -3,8 +3,6 @@ use std::sync::Once;
 
 use super::BYTES_PER_CHUNK;
 
-use rayon::prelude::*;
-
 #[cfg(not(feature = "hashtree"))]
 use ::sha2::{Digest, Sha256};
 
@@ -52,48 +50,21 @@ pub fn hash_pairs_bulk(in_pairs: &[u8], out_hashes: &mut [u8]) {
         return;
     }
 
-    // Determine the number of chunks to split the work into.
-    // This is a good heuristic, dividing the work among the available threads.
-    let num_threads = rayon::current_num_threads();
-    let pairs_per_chunk = (num_pairs + num_threads - 1) / num_threads; // Ceiling division
+    // Call the SIMD-optimized bulk hash function directly.
+    #[cfg(feature = "hashtree")]
+    {
+        hashtree::init(); // If not already done elsewhere
+        hashtree::hash(out_hashes, in_pairs, num_pairs);
+    }
 
-    // Calculate byte sizes for the chunks
-    let in_chunk_size = pairs_per_chunk * 64;
-    let out_chunk_size = pairs_per_chunk * 32;
-
-    // Create parallel iterators over the large chunks
-    out_hashes.par_chunks_mut(out_chunk_size).zip(in_pairs.par_chunks(in_chunk_size)).for_each(
-        |(out_chunk, in_chunk)| {
-            // This closure is executed in parallel on a large chunk of data.
-            // Now we can use the original, efficient sequential logic inside.
-
-            #[cfg(feature = "hashtree")]
-            {
-                // This assumes `hashtree::hash` is thread-safe after `init`.
-                // The `INIT` call should be outside the parallel loop if possible,
-                // or remain where it is, as `call_once` is thread-safe.
-                INIT.call_once(|| {
-                    hashtree::init();
-                });
-
-                let pairs_in_this_chunk = in_chunk.len() / 64;
-                if pairs_in_this_chunk > 0 {
-                    // Call the bulk function on the chunk
-                    hashtree::hash(out_chunk, in_chunk, pairs_in_this_chunk);
-                }
-            }
-
-            #[cfg(not(feature = "hashtree"))]
-            {
-                // Run the original sequential loop on the chunk assigned to this thread.
-                for (blk, out) in in_chunk.chunks_exact(64).zip(out_chunk.chunks_exact_mut(32)) {
-                    let mut h = Sha256::new();
-                    h.update(blk);
-                    out.copy_from_slice(&h.finalize_reset());
-                }
-            }
-        },
-    );
+    #[cfg(not(feature = "hashtree"))]
+    {
+        for (blk, out) in in_pairs.chunks_exact(64).zip(out_hashes.chunks_exact_mut(32)) {
+            let mut h = Sha256::new();
+            h.update(blk);
+            out.copy_from_slice(&h.finalize_reset());
+        }
+    }
 }
 
 /// Function that hashes 2 [BYTES_PER_CHUNK] (32) len byte slices together. Depending on the feature
