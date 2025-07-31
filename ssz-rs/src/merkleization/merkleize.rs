@@ -11,6 +11,8 @@ use crate::{
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
 
+use rayon::join;
+
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports
 // decoration.
 const INNER_ROOT_GENERALIZED_INDEX: GeneralizedIndex = 2;
@@ -271,6 +273,55 @@ fn compute_merkle_tree_serial(buffer: &mut [u8], leaf_count: usize) {
 
         hash_pairs_bulk(child_layer, &mut parent_layer[..num_parent_nodes * BYTES_PER_CHUNK]);
     }
+}
+
+pub fn merkleize_parallel(chunks: &[u8], limit: Option<usize>) -> Result<Node, Error> {
+    debug_assert!(chunks.len() % BYTES_PER_CHUNK == 0);
+    let chunk_count = chunks.len() / BYTES_PER_CHUNK;
+    let mut leaf_count = chunk_count.next_power_of_two();
+    if let Some(limit) = limit {
+        if limit < chunk_count {
+            return Err(Error::InputExceedsLimit(limit));
+        }
+        leaf_count = limit.next_power_of_two();
+    }
+    Ok(merkleize_chunks_parallel(chunks, 0, leaf_count))
+}
+
+/// Divide and conquer, recursive, parallel Merkle calculation.
+/// `chunks` may be shorter than `leaf_count * BYTES_PER_CHUNK` and is zero-padded virtually.
+/// `depth` is how deep in the tree we are (0 = root), used for zero hash.
+fn merkleize_chunks_parallel(chunks: &[u8], depth: usize, leaf_count: usize) -> Node {
+    // Base case: this subtree is all virtual padding
+    if chunks.is_empty() {
+        // Use precomputed zero hash for this depth
+        return CONTEXT[depth].try_into().unwrap();
+    }
+    // Base case: only one chunk (or less, but not empty)
+    if leaf_count == 1 {
+        let mut out = [0u8; BYTES_PER_CHUNK];
+        out[..chunks.len()].copy_from_slice(chunks);
+        if chunks.len() < BYTES_PER_CHUNK {
+            // Zero pad
+            for i in chunks.len()..BYTES_PER_CHUNK {
+                out[i] = 0;
+            }
+        }
+        return alloy_primitives::FixedBytes(out);
+    }
+
+    let half = leaf_count / 2;
+    let chunk_half = std::cmp::min(half * BYTES_PER_CHUNK, chunks.len());
+    let (left, right) = chunks.split_at(chunk_half);
+
+    let (left_hash, right_hash) = join(
+        || merkleize_chunks_parallel(left, depth + 1, half),
+        || merkleize_chunks_parallel(right, depth + 1, half),
+    );
+
+    let mut out = [0u8; BYTES_PER_CHUNK];
+    hash_nodes(left_hash, right_hash, &mut out);
+    alloy_primitives::FixedBytes(out)
 }
 
 #[cfg(test)]

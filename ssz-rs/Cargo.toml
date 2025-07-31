@@ -53,3 +53,7 @@ harness = false
 [[bench]]
 name = "bench_pairs"
 harness = false
+
+[[bench]]
+name = "bench_merkle_roots"
+harness = false

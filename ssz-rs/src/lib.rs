@@ -102,7 +102,7 @@ mod serde;
 mod uint;
 mod union;
 mod vector;
-pub use crate::merkleization::hash_pairs_bulk;
+pub use crate::merkleization::{hash_pairs_bulk, merkleize, merkleize_parallel, pack};
 
 mod lib {
     mod core {
