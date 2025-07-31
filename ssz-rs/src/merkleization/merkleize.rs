@@ -250,27 +250,21 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
 }
 
 // Compute the Merkle tree serially.
-fn compute_merkle_tree_serial(buffer: &mut [u8], leaf_count: usize) {
+pub fn compute_merkle_tree_serial(buffer: &mut [u8], leaf_count: usize) {
     let tree_height = leaf_count.ilog2();
 
-    // Iterate from the level just above the leaves up to the root.
     for depth in (0..tree_height).rev() {
         let parent_level_start_node = (1 << depth) - 1;
         let num_parent_nodes = 1 << depth;
-
         let child_level_start_node = (1 << (depth + 1)) - 1;
 
-        // Since nodes are stored contiguously by level, we can get slices
-        // for the child and parent levels and pass them to the bulk hasher.
         let child_start_byte = child_level_start_node * BYTES_PER_CHUNK;
         let (parent_half, child_half) = buffer.split_at_mut(child_start_byte);
 
         let parent_start_byte = parent_level_start_node * BYTES_PER_CHUNK;
         let parent_layer = &mut parent_half[parent_start_byte..];
 
-        // The number of pairs to hash is the number of parent nodes.
         let child_layer = &child_half[..num_parent_nodes * 2 * BYTES_PER_CHUNK];
-
         hash_pairs_bulk(child_layer, &mut parent_layer[..num_parent_nodes * BYTES_PER_CHUNK]);
     }
 }
@@ -322,6 +316,187 @@ fn merkleize_chunks_parallel(chunks: &[u8], depth: usize, leaf_count: usize) -> 
     let mut out = [0u8; BYTES_PER_CHUNK];
     hash_nodes(left_hash, right_hash, &mut out);
     alloy_primitives::FixedBytes(out)
+}
+
+pub fn compute_node_count(leaf_count: usize) -> usize {
+    2 * leaf_count - 1
+}
+
+// Copies data for a list of node indices between buffers
+fn copy_nodes_to_buffer(src: &[u8], node_indices: &[usize], dst: &mut [u8]) {
+    for (i, &node_idx) in node_indices.iter().enumerate() {
+        let src_start = node_idx * BYTES_PER_CHUNK;
+        let src_end = src_start + BYTES_PER_CHUNK;
+        let dst_start = i * BYTES_PER_CHUNK;
+        let dst_end = dst_start + BYTES_PER_CHUNK;
+        dst[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
+    }
+}
+
+fn copy_buffer_to_nodes(src: &[u8], node_indices: &[usize], dst: &mut [u8]) {
+    for (i, &node_idx) in node_indices.iter().enumerate() {
+        let dst_start = node_idx * BYTES_PER_CHUNK;
+        let dst_end = dst_start + BYTES_PER_CHUNK;
+        let src_start = i * BYTES_PER_CHUNK;
+        let src_end = src_start + BYTES_PER_CHUNK;
+        dst[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
+    }
+}
+
+fn process_subtree(buffer: &mut [u8], node_count: usize) {
+    // (Nearly identical to compute_merkle_tree_serial, but just for this buffer)
+    let tree_height = node_count.ilog2();
+
+    for depth in (0..tree_height).rev() {
+        let parent_level_start_node = (1 << depth) - 1;
+        let num_parent_nodes = 1 << depth;
+        let child_level_start_node = (1 << (depth + 1)) - 1;
+
+        let child_start_byte = child_level_start_node * BYTES_PER_CHUNK;
+        let (parent_half, child_half) = buffer.split_at_mut(child_start_byte);
+        let parent_start_byte = parent_level_start_node * BYTES_PER_CHUNK;
+        let parent_layer = &mut parent_half[parent_start_byte..];
+
+        let child_layer = &child_half[..num_parent_nodes * 2 * BYTES_PER_CHUNK];
+        hash_pairs_bulk(child_layer, &mut parent_layer[..num_parent_nodes * BYTES_PER_CHUNK]);
+    }
+}
+
+pub fn compute_merkle_tree_parallel_8(buffer: &mut [u8], leaf_count: usize) {
+    let node_count = compute_node_count(leaf_count);
+    let nodes = split_merkle_tree_nodes8(node_count);
+
+    let mut subtree_buffers = vec![
+        vec![0u8; nodes.subtree0.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree1.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree2.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree3.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree4.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree5.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree6.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree7.len() * BYTES_PER_CHUNK],
+    ];
+
+    copy_nodes_to_buffer(buffer, &nodes.subtree0, &mut subtree_buffers[0]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree1, &mut subtree_buffers[1]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree2, &mut subtree_buffers[2]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree3, &mut subtree_buffers[3]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree4, &mut subtree_buffers[4]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree5, &mut subtree_buffers[5]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree6, &mut subtree_buffers[6]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree7, &mut subtree_buffers[7]);
+
+    let subtree_lens: Vec<_> = subtree_buffers.iter().map(|b| b.len() / BYTES_PER_CHUNK).collect();
+
+    rayon::scope(|s| {
+        for (buf, &len) in subtree_buffers.iter_mut().zip(subtree_lens.iter()) {
+            s.spawn(move |_| process_subtree(buf, len));
+        }
+    });
+
+    copy_buffer_to_nodes(&subtree_buffers[0], &nodes.subtree0, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[1], &nodes.subtree1, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[2], &nodes.subtree2, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[3], &nodes.subtree3, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[4], &nodes.subtree4, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[5], &nodes.subtree5, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[6], &nodes.subtree6, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[7], &nodes.subtree7, buffer);
+
+    // Compute parent nodes above level 3
+    let mut level = 3;
+    while level > 0 {
+        let start_idx = (1 << level) - 1;
+        let end_idx = (1 << (level + 1)) - 1;
+        for parent in (start_idx..end_idx).step_by(2) {
+            if parent + 1 >= node_count {
+                continue;
+            }
+            let hash = hash_chunks(
+                &buffer[parent * BYTES_PER_CHUNK..(parent + 1) * BYTES_PER_CHUNK],
+                &buffer[(parent + 1) * BYTES_PER_CHUNK..(parent + 2) * BYTES_PER_CHUNK],
+            );
+            let parent_idx = (parent - 1) / 2;
+            buffer[parent_idx * BYTES_PER_CHUNK..(parent_idx + 1) * BYTES_PER_CHUNK]
+                .copy_from_slice(&hash);
+        }
+        if level == 0 {
+            break;
+        }
+        level -= 1;
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct SubtreeNodes8 {
+    subtree0: Vec<usize>,
+    subtree1: Vec<usize>,
+    subtree2: Vec<usize>,
+    subtree3: Vec<usize>,
+    subtree4: Vec<usize>,
+    subtree5: Vec<usize>,
+    subtree6: Vec<usize>,
+    subtree7: Vec<usize>,
+}
+
+fn split_merkle_tree_nodes8(node_count: usize) -> SubtreeNodes8 {
+    let mut subtrees = SubtreeNodes8 {
+        subtree0: Vec::new(),
+        subtree1: Vec::new(),
+        subtree2: Vec::new(),
+        subtree3: Vec::new(),
+        subtree4: Vec::new(),
+        subtree5: Vec::new(),
+        subtree6: Vec::new(),
+        subtree7: Vec::new(),
+    };
+
+    // Skip root node (index 0) and level 1-2 nodes (1-6)
+    for i in 7..node_count {
+        // Determine the level of the current node (0-based)
+        let level = (i + 1).ilog2() as usize;
+        // Position within the current level
+        let pos_in_level = i - ((1 << level) - 1);
+
+        // For level 3 nodes (indices 7-14), they become the start of our subtrees
+        if level == 3 {
+            match i {
+                7 => subtrees.subtree0.push(i),
+                8 => subtrees.subtree1.push(i),
+                9 => subtrees.subtree2.push(i),
+                10 => subtrees.subtree3.push(i),
+                11 => subtrees.subtree4.push(i),
+                12 => subtrees.subtree5.push(i),
+                13 => subtrees.subtree6.push(i),
+                14 => subtrees.subtree7.push(i),
+                _ => unreachable!("Invalid level 3 index"),
+            }
+            continue;
+        }
+
+        // For deeper levels, assign based on their ancestor at level 3
+        if level > 3 {
+            let ancestor_at_level3 = {
+                let steps_up = level - 3;
+                let parent_pos = pos_in_level >> steps_up;
+                parent_pos + 7 // +7 because level 3 starts at index 7
+            };
+
+            match ancestor_at_level3 {
+                7 => subtrees.subtree0.push(i),
+                8 => subtrees.subtree1.push(i),
+                9 => subtrees.subtree2.push(i),
+                10 => subtrees.subtree3.push(i),
+                11 => subtrees.subtree4.push(i),
+                12 => subtrees.subtree5.push(i),
+                13 => subtrees.subtree6.push(i),
+                14 => subtrees.subtree7.push(i),
+                _ => unreachable!("Invalid ancestor index at level 3"),
+            }
+        }
+    }
+
+    subtrees
 }
 
 #[cfg(test)]

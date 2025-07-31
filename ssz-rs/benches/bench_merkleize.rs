@@ -1,6 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use ssz_rs::{merkleize, merkleize_parallel, pack, List};
+use ssz_rs::{compute_merkle_tree_parallel_8, compute_merkle_tree_serial, pack, List};
 use std::{convert::TryFrom, env, fs::File, io::BufReader, path::Path};
+
+const BYTES_PER_CHUNK: usize = 32;
 
 // https://github.com/ethereum/consensus-specs/blob/85b4d003668731cbad63d6b6ba53fcc7d042cba1/specs/bellatrix/beacon-chain.md?plain=1#L69-L76
 const MAX_BYTES_PER_TRANSACTION: usize = 1_073_741_824; // 1 GiB
@@ -63,6 +65,15 @@ fn load_transactions<P: AsRef<Path>>(
     outer
 }
 
+fn repeat_transactions_to_len<T: Clone>(txs: &Vec<T>, target_len: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(target_len);
+    while out.len() < target_len {
+        let to_take = std::cmp::min(txs.len(), target_len - out.len());
+        out.extend_from_slice(&txs[..to_take]);
+    }
+    out
+}
+
 fn bench_merkle_roots(c: &mut Criterion) {
     for &file_path_str in TRANSACTIONS_JSON_PATHS {
         let file_path = Path::new(file_path_str);
@@ -80,13 +91,45 @@ fn bench_merkle_roots(c: &mut Criterion) {
         ));
         group.sample_size(10);
 
-        group.bench_with_input(BenchmarkId::new("serial", file_path_str), &packed, |b, input| {
-            b.iter(|| black_box(merkleize(input, None).expect("serial merkle")));
-        });
+        let chunk_count = packed.len() / BYTES_PER_CHUNK;
+        let leaf_count = chunk_count.next_power_of_two();
+        let node_count = 2 * leaf_count - 1;
+        let mut tree_buffer = vec![0u8; node_count * BYTES_PER_CHUNK];
+        let leaf_start = leaf_count - 1;
 
-        group.bench_with_input(BenchmarkId::new("parallel", file_path_str), &packed, |b, input| {
-            b.iter(|| black_box(merkleize_parallel(input, None).expect("parallel merkle")));
-        });
+        // Copy packed leaves into tree buffer at correct position
+        tree_buffer[leaf_start * BYTES_PER_CHUNK..leaf_start * BYTES_PER_CHUNK + packed.len()]
+            .copy_from_slice(&packed);
+
+        group.bench_with_input(
+            BenchmarkId::new("full_tree_serial", file_path_str),
+            &packed,
+            |b, input| {
+                b.iter(|| {
+                    let mut tree_buffer = vec![0u8; node_count * BYTES_PER_CHUNK];
+                    tree_buffer
+                        [leaf_start * BYTES_PER_CHUNK..leaf_start * BYTES_PER_CHUNK + packed.len()]
+                        .copy_from_slice(input);
+                    compute_merkle_tree_serial(&mut tree_buffer, leaf_count);
+                    black_box(&tree_buffer[0..BYTES_PER_CHUNK]);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("full_tree_parallel_8", file_path_str),
+            &packed,
+            |b, input| {
+                b.iter(|| {
+                    let mut tree_buffer = vec![0u8; node_count * BYTES_PER_CHUNK];
+                    tree_buffer
+                        [leaf_start * BYTES_PER_CHUNK..leaf_start * BYTES_PER_CHUNK + packed.len()]
+                        .copy_from_slice(input);
+                    compute_merkle_tree_parallel_8(&mut tree_buffer, leaf_count);
+                    black_box(&tree_buffer[0..BYTES_PER_CHUNK]);
+                });
+            },
+        );
 
         group.finish();
     }

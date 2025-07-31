@@ -55,5 +55,5 @@ name = "bench_pairs"
 harness = false
 
 [[bench]]
-name = "bench_merkle_roots"
+name = "bench_merkleize"
 harness = false
