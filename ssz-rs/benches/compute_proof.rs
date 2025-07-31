@@ -1,6 +1,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use ssz_rs::{List, PathElement, Prove};
+use ssz_rs::{proofs::compute_proof_branch_indexes, List, PathElement, Prove};
 use std::{convert::TryFrom, env, fs::File, hint::black_box, io::BufReader, path::Path};
+
+const BYTES_PER_CHUNK: usize = 32;
 
 // https://github.com/ethereum/consensus-specs/blob/85b4d003668731cbad63d6b6ba53fcc7d042cba1/specs/bellatrix/beacon-chain.md?plain=1#L69-L76
 const MAX_BYTES_PER_TRANSACTION: usize = 1_073_741_824; // 1 GiB
@@ -87,6 +89,43 @@ fn bench_prove(c: &mut Criterion) {
                 black_box(proof)
             })
         });
+
+        group.bench_with_input(
+            BenchmarkId::new("tree_and_branch_extract", index),
+            &index,
+            |b, &leaf_index| {
+                // Packed data can be precomputed once
+                let packed = ssz_rs::pack(&outer).expect("can pack values");
+                let chunk_count = packed.len() / BYTES_PER_CHUNK;
+                let leaf_count = chunk_count.next_power_of_two();
+                let node_count = 2 * leaf_count - 1;
+                let leaf_start = leaf_count - 1;
+
+                b.iter(|| {
+                    // 1. Copy leaves into a fresh buffer for each iteration
+                    let mut tree_buffer = vec![0u8; node_count * BYTES_PER_CHUNK];
+                    tree_buffer
+                        [leaf_start * BYTES_PER_CHUNK..leaf_start * BYTES_PER_CHUNK + packed.len()]
+                        .copy_from_slice(&packed);
+
+                    // 2. Compute the Merkle tree in place
+                    ssz_rs::compute_merkle_tree_serial(&mut tree_buffer, leaf_count);
+
+                    // 3. Extract the proof branch from the buffer
+                    let branch_indexes = compute_proof_branch_indexes(leaf_count, leaf_index);
+                    let branch_hashes: Vec<[u8; 32]> = branch_indexes
+                        .iter()
+                        .map(|&i| {
+                            let start = i * BYTES_PER_CHUNK;
+                            let end = start + BYTES_PER_CHUNK;
+                            tree_buffer[start..end].try_into().unwrap()
+                        })
+                        .collect();
+
+                    black_box(branch_hashes)
+                })
+            },
+        );
 
         group.finish();
     }

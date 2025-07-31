@@ -12,6 +12,7 @@ pub use generalized_index::{
 };
 pub use merkleize::*;
 pub use node::*;
+pub use proofs::compute_proof_branch_indexes;
 
 pub(crate) const BYTES_PER_CHUNK: usize = 32;
 pub(crate) const BITS_PER_CHUNK: usize = BYTES_PER_CHUNK * (crate::BITS_PER_BYTE as usize);

@@ -65,16 +65,7 @@ fn load_transactions<P: AsRef<Path>>(
     outer
 }
 
-fn repeat_transactions_to_len<T: Clone>(txs: &Vec<T>, target_len: usize) -> Vec<T> {
-    let mut out = Vec::with_capacity(target_len);
-    while out.len() < target_len {
-        let to_take = std::cmp::min(txs.len(), target_len - out.len());
-        out.extend_from_slice(&txs[..to_take]);
-    }
-    out
-}
-
-fn bench_merkle_roots(c: &mut Criterion) {
+fn bench_merkleize(c: &mut Criterion) {
     for &file_path_str in TRANSACTIONS_JSON_PATHS {
         let file_path = Path::new(file_path_str);
 
@@ -135,5 +126,5 @@ fn bench_merkle_roots(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_merkle_roots);
+criterion_group!(benches, bench_merkleize);
 criterion_main!(benches);

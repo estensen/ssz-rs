@@ -229,6 +229,20 @@ pub fn is_valid_merkle_branch(
     }
 }
 
+/// Returns the buffer indices for the proof path, given the number of leaves and a leaf index.
+pub fn compute_proof_branch_indexes(leaf_count: usize, leaf_index: usize) -> Vec<usize> {
+    let leaf_start = leaf_count - 1;
+    let mut idx = leaf_start + leaf_index;
+    let mut branch = Vec::new();
+
+    while idx > 0 {
+        let sibling = if idx % 2 == 0 { idx - 1 } else { idx + 1 };
+        branch.push(sibling);
+        idx = (idx - 1) / 2;
+    }
+    branch
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
