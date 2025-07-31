@@ -45,3 +45,11 @@ sha2 = "0.9.8"
 [[bench]]
 name = "compute_proof"
 harness = false
+
+[[bench]]
+name    = "bench_hashtree"
+harness = false
+
+[[bench]]
+name = "bench_pairs"
+harness = false

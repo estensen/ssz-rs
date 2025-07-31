@@ -1,9 +1,10 @@
 pub mod generalized_index;
+mod hasher;
 mod merkleize;
 pub mod multiproofs;
 mod node;
 pub mod proofs;
-mod hasher;
+pub use self::hasher::hash_pairs_bulk;
 
 use crate::{lib::*, ser::SerializeError};
 pub use generalized_index::{

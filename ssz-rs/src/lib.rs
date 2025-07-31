@@ -102,6 +102,7 @@ mod serde;
 mod uint;
 mod union;
 mod vector;
+pub use crate::merkleization::hash_pairs_bulk;
 
 mod lib {
     mod core {
@@ -111,15 +112,12 @@ mod lib {
         pub use std::*;
     }
 
-    pub use self::core::{any, cmp, fmt};
+    pub use self::core::{any, fmt};
 
-    pub use self::{
-        cmp::Ordering,
-        core::{
-            fmt::{Debug, Display, Formatter},
-            ops::{Deref, DerefMut, Index, IndexMut},
-            slice::SliceIndex,
-        },
+    pub use self::core::{
+        fmt::{Debug, Display, Formatter},
+        ops::{Deref, DerefMut, Index, IndexMut},
+        slice::SliceIndex,
     };
 
     #[cfg(not(feature = "std"))]
