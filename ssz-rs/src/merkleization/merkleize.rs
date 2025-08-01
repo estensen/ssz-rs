@@ -166,11 +166,14 @@ pub(crate) fn elements_to_chunks<'a, T: HashTreeRoot + 'a>(
     elements: impl Iterator<Item = (usize, &'a T)>,
     count: usize,
 ) -> Result<Vec<u8>, Error> {
-    let mut chunks = vec![0u8; count * BYTES_PER_CHUNK];
+    let total = count * BYTES_PER_CHUNK;
+    let mut chunks: Vec<u8> = Vec::with_capacity(total);
+    unsafe { chunks.set_len(total) };
+
     for (i, elem) in elements {
         let chunk = elem.hash_tree_root()?;
-        let range = i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK;
-        chunks[range].copy_from_slice(chunk.as_ref());
+        let dst = &mut chunks[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
+        dst.copy_from_slice(chunk.as_ref());
     }
     Ok(chunks)
 }
