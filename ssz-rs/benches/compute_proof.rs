@@ -113,11 +113,11 @@ fn bench_outer_prove_cached(c: &mut Criterion) {
         let index = outer.len() / 2;
         let path = vec![PathElement::from(index)];
 
-        // Pre-compute the cached tree
-        let cached_tree = outer.get_cached_tree().expect("can get cached tree");
-
         group.bench_function(BenchmarkId::from_parameter(name), |b| {
             b.iter(|| {
+                // Pre-compute the cached tree
+                let cached_tree = outer.get_cached_tree().expect("can get cached tree");
+
                 let proof =
                     outer.prove_cached(black_box(&path), Some(&cached_tree)).expect("prove ok");
                 black_box(proof);
