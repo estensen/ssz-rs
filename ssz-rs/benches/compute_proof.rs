@@ -1,9 +1,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use once_cell::sync::Lazy;
-use ssz_rs::{pack, proofs::compute_proof_branch_indexes, List, PathElement, Prove};
-use std::{convert::TryFrom, fs::File, hint::black_box, io::BufReader, path::Path, time::Duration};
+use ssz_rs::{List, PathElement, Prove};
+use std::{convert::TryFrom, fs::File, hint::black_box, io::BufReader, path::Path};
 
-const BYTES_PER_CHUNK: usize = 32;
 const MAX_BYTES_PER_TRANSACTION: usize = 1_073_741_824; // 1 GiB
 const MAX_TRANSACTIONS_PER_PAYLOAD: usize = 1_048_576; // 2^20
 
@@ -55,6 +54,7 @@ fn bench_outer_prove(c: &mut Criterion) {
     group.finish();
 }
 
+/*
 fn bench_manual_branch(c: &mut Criterion) {
     for (name, outer) in [("21315748", &*OUTER_247), ("21327802", &*OUTER_261)] {
         let size = outer.len();
@@ -127,7 +127,8 @@ fn bench_outer_prove_cached(c: &mut Criterion) {
 
     group.finish();
 }
+    */
 
-criterion_group!(benches, bench_outer_prove, bench_outer_prove_cached);
+criterion_group!(benches, bench_outer_prove);
 //criterion_group!(benches, bench_outer_prove, bench_manual_branch);
 criterion_main!(benches);
