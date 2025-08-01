@@ -57,3 +57,9 @@ harness = false
 [[bench]]
 name = "bench_merkleize"
 harness = false
+
+[profile.bench]
+debug = true
+lto = false     # avoid cross-crate inlining that hides symbols
+codegen-units = 1
+opt-level = 3

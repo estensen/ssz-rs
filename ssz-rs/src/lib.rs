@@ -115,7 +115,7 @@ mod lib {
         pub use std::*;
     }
 
-    pub use self::core::{any, fmt};
+    pub use self::core::{any, cmp, fmt};
 
     pub use self::core::{
         fmt::{Debug, Display, Formatter},

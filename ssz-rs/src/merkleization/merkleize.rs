@@ -188,6 +188,16 @@ impl Tree {
         Ok(())
     }
 
+    /// Get the raw bytes of the tree for caching purposes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Create a Tree from raw bytes (for caching purposes)
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Tree(bytes)
+    }
+
     #[cfg(feature = "serde")]
     fn nodes(&self) -> impl Iterator<Item = Node> + '_ {
         self.0.chunks(BYTES_PER_CHUNK).map(|chunk| Node::from_hex(chunk).unwrap())
