@@ -11,7 +11,7 @@ use crate::{
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
 
-use rayon::join;
+use rayon::{join, prelude::*};
 
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports
 // decoration.
@@ -236,26 +236,32 @@ impl std::fmt::Debug for Tree {
 // Invariant: `leaf_count.next_power_of_two() == leaf_count`
 pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Error> {
     debug_assert!(chunks.len() % BYTES_PER_CHUNK == 0);
-    debug_assert!(leaf_count.next_power_of_two() == leaf_count);
-
+    debug_assert!(leaf_count.is_power_of_two());
     if leaf_count < 2 {
         return Ok(Tree(chunks.to_vec()));
     }
 
-    // We use a flat array to represent the binary tree, laid out like a heap.
-    // Index 0 is the root. Children of node `i` are `2i + 1` and `2i + 2`.
-    // The leaves start at `leaf_count - 1`.
     let node_count = 2 * leaf_count - 1;
-    let leaf_start_index = leaf_count - 1;
+    let leaf_start = leaf_count - 1;
+    let node_bytes = node_count * BYTES_PER_CHUNK;
 
-    let mut buffer = vec![0u8; node_count * BYTES_PER_CHUNK];
+    // Uninitialized buffer; we will fully write all bytes we ever read.
+    let mut buffer: Vec<u8> = Vec::with_capacity(node_bytes);
+    unsafe { buffer.set_len(node_bytes) };
 
-    // Copy input chunks to the leaf positions at the end of the buffer.
-    let leaf_start_bytes = leaf_start_index * BYTES_PER_CHUNK;
+    // Copy the actual chunks into leaf area.
+    let leaf_start_bytes = leaf_start * BYTES_PER_CHUNK;
     buffer[leaf_start_bytes..leaf_start_bytes + chunks.len()].copy_from_slice(chunks);
 
-    compute_merkle_tree_serial(&mut buffer, leaf_count);
+    // If odd number of chunks, ensure the single extra child we will read is zeroed.
+    let chunk_count = chunks.len() / BYTES_PER_CHUNK;
+    if chunk_count & 1 == 1 {
+        let off = leaf_start_bytes + chunk_count * BYTES_PER_CHUNK;
+        // write exactly one zero-node; parents above will be filled from CONTEXT.
+        buffer[off..off + BYTES_PER_CHUNK].fill(0);
+    }
 
+    compute_merkle_tree_inplace(&mut buffer, leaf_count, chunk_count);
     Ok(Tree(buffer))
 }
 
@@ -276,6 +282,62 @@ pub fn compute_merkle_tree_serial(buffer: &mut [u8], leaf_count: usize) {
 
         let child_layer = &child_half[..num_parent_nodes * 2 * BYTES_PER_CHUNK];
         hash_pairs_bulk(child_layer, &mut parent_layer[..num_parent_nodes * BYTES_PER_CHUNK]);
+    }
+}
+
+pub fn compute_merkle_tree_inplace(buffer: &mut [u8], leaf_count: usize, chunk_count: usize) {
+    debug_assert!(leaf_count.is_power_of_two());
+    if leaf_count < 2 {
+        return;
+    }
+
+    let h = leaf_count.ilog2() as usize;
+    let mut real = chunk_count; // number of child nodes at this level that are “real”
+
+    for depth in (0..h).rev() {
+        let parents = 1usize << depth;
+        let num_parent_nodes = parents;
+
+        let child_level_start_node = (1 << (depth + 1)) - 1;
+        let parent_level_start_node = (1 << depth) - 1;
+
+        let child_start_byte = child_level_start_node * BYTES_PER_CHUNK;
+        let parent_start_byte = parent_level_start_node * BYTES_PER_CHUNK;
+
+        // Split once so the two borrows are disjoint
+        let (prefix, child_and_rest) = buffer.split_at_mut(child_start_byte);
+
+        // Parent layer lives entirely in `prefix`
+        let parent_layer =
+            &mut prefix[parent_start_byte..parent_start_byte + num_parent_nodes * BYTES_PER_CHUNK];
+
+        // Child layer lives at the beginning of `child_and_rest`
+        let child_layer = &child_and_rest[..num_parent_nodes * 2 * BYTES_PER_CHUNK];
+
+        // How many parents actually depend on data at this level
+        let need = (real + 1) / 2;
+
+        // Hash the needed parents from the child layer
+        parent_layer[..need * BYTES_PER_CHUNK]
+            .par_chunks_mut(BYTES_PER_CHUNK)
+            .enumerate()
+            .for_each(|(i, dst)| {
+                let off = i * 2 * BYTES_PER_CHUNK;
+                let a = &child_layer[off..off + BYTES_PER_CHUNK];
+                let b = &child_layer[off + BYTES_PER_CHUNK..off + 2 * BYTES_PER_CHUNK];
+                dst.copy_from_slice(&hash_chunks(a, b));
+            });
+
+        // Fill the tail with the correct zero-subtree hash for this level
+        if need < parents {
+            // subtree height at this level = h - depth
+            let zero = &CONTEXT[h - depth];
+            for dst in parent_layer[need * BYTES_PER_CHUNK..].chunks_mut(BYTES_PER_CHUNK) {
+                dst.copy_from_slice(zero);
+            }
+        }
+
+        real = need;
     }
 }
 
