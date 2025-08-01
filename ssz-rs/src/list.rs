@@ -334,7 +334,8 @@ impl<'de, T: Serializable + serde::Deserialize<'de>, const N: usize> serde::Dese
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lib::cmp::Ordering, serialize, U256};
+    use crate::{serialize, U256};
+    use core::cmp::Ordering;
 
     const COUNT: usize = 32;
 
