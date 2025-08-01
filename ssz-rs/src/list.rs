@@ -3,7 +3,7 @@ use crate::{
     error::{Error, InstanceError},
     lib::*,
     merkleization::{
-        elements_to_chunks, get_power_of_two_ceil, merkleize, mix_in_length, pack,
+        elements_to_chunks, elements_to_chunks_parallel, get_power_of_two_ceil, merkleize, mix_in_length, pack,
         proofs::{Prove, Prover},
         GeneralizedIndex, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node, Path,
         PathElement, BYTES_PER_CHUNK,
@@ -200,6 +200,18 @@ where
         if T::is_composite_type() {
             let count = self.len();
             elements_to_chunks(self.data.iter().enumerate(), count)
+        } else {
+            pack(self)
+        }
+    }
+
+    // Parallel version when T: Sync
+    fn assemble_chunks_parallel(&self) -> Result<Vec<u8>, MerkleizationError>
+    where
+        T: SimpleSerialize + Sync,
+    {
+        if T::is_composite_type() {
+            elements_to_chunks_parallel(&self.data)
         } else {
             pack(self)
         }

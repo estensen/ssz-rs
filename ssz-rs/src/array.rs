@@ -3,7 +3,7 @@ use crate::{
     error::{InstanceError, TypeError},
     lib::*,
     merkleization::{
-        elements_to_chunks, get_power_of_two_ceil, merkleize, pack,
+        elements_to_chunks, elements_to_chunks_parallel, get_power_of_two_ceil, merkleize, pack,
         proofs::{Prove, Prover},
         GeneralizedIndex, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node, Path,
         PathElement,
@@ -77,7 +77,7 @@ where
     T: SimpleSerialize,
 {
     fn hash_tree_root(&self) -> Result<Node, MerkleizationError> {
-        let chunks = self.chunks()?;
+        let chunks = <Self as Prove>::chunks(self)?;
         merkleize(&chunks, None)
     }
 

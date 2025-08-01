@@ -178,6 +178,27 @@ pub(crate) fn elements_to_chunks<'a, T: HashTreeRoot + 'a>(
     Ok(chunks)
 }
 
+// New parallel version for slice inputs
+pub(crate) fn elements_to_chunks_parallel<T: HashTreeRoot + Sync>(
+    elements: &[T],
+) -> Result<Vec<u8>, Error> {
+    let count = elements.len();
+    let total = count * BYTES_PER_CHUNK;
+    let mut chunks: Vec<u8> = vec![0u8; total];
+
+    // Use rayon to compute the roots and fill the chunks buffer in parallel
+    elements
+        .par_iter()
+        .zip(chunks.par_chunks_mut(BYTES_PER_CHUNK))
+        .try_for_each(|(elem, chunk_buffer)| -> Result<(), Error> {
+            let root = elem.hash_tree_root()?;
+            chunk_buffer.copy_from_slice(root.as_ref());
+            Ok(())
+        })?;
+
+    Ok(chunks)
+}
+
 pub struct Tree(Vec<u8>);
 
 impl Tree {
@@ -320,16 +341,16 @@ pub fn compute_merkle_tree_inplace(buffer: &mut [u8], leaf_count: usize, chunk_c
         // How many parents actually depend on data at this level
         let need = (real + 1) / 2;
 
-        // Hash the needed parents from the child layer
-        parent_layer[..need * BYTES_PER_CHUNK]
-            .par_chunks_mut(BYTES_PER_CHUNK)
-            .enumerate()
-            .for_each(|(i, dst)| {
-                let off = i * 2 * BYTES_PER_CHUNK;
-                let a = &child_layer[off..off + BYTES_PER_CHUNK];
-                let b = &child_layer[off + BYTES_PER_CHUNK..off + 2 * BYTES_PER_CHUNK];
-                dst.copy_from_slice(&hash_chunks(a, b));
-            });
+        // Use bulk hashing for maximum SIMD efficiency
+        if need > 0 {
+            // The children that are inputs to our real parent nodes
+            let child_pairs_to_hash = &child_layer[..need * 2 * BYTES_PER_CHUNK];
+            // The parents that will be the output of the hash
+            let parent_hashes_to_fill = &mut parent_layer[..need * BYTES_PER_CHUNK];
+            
+            // Use the bulk hash function to process the entire layer at once
+            hash_pairs_bulk(child_pairs_to_hash, parent_hashes_to_fill);
+        }
 
         // Fill the tail with the correct zero-subtree hash for this level
         if need < parents {
