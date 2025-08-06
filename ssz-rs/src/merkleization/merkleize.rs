@@ -356,14 +356,33 @@ pub fn compute_merkle_tree_inplace(buffer: &mut [u8], leaf_count: usize, chunk_c
 
         // Fill the tail with the correct zero-subtree hash for this level
         if need < num_parent_nodes {
-            // subtree height at this level = h - depth
             let zero = &CONTEXT[h - depth];
-            for dst in parent_layer[need * BYTES_PER_CHUNK..].chunks_mut(BYTES_PER_CHUNK) {
-                dst.copy_from_slice(zero);
-            }
+            let tail = &mut parent_layer[need * BYTES_PER_CHUNK..];
+            fill_zeros_bytes(tail, zero);
         }
 
         real = need;
+    }
+}
+
+#[inline]
+fn fill_zeros_bytes(dst: &mut [u8], zero: &[u8]) {
+    debug_assert!(dst.len() % BYTES_PER_CHUNK == 0);
+    debug_assert!(zero.len() == BYTES_PER_CHUNK);
+    if dst.is_empty() {
+        return;
+    }
+
+    // Seed once
+    dst[..BYTES_PER_CHUNK].copy_from_slice(&zero[..BYTES_PER_CHUNK]);
+
+    // Geometric copy
+    let mut filled = BYTES_PER_CHUNK;
+    while filled < dst.len() {
+        let (left, right) = dst.split_at_mut(filled);
+        let n = filled.min(right.len());
+        right[..n].copy_from_slice(&left[..n]);
+        filled <<= 1;
     }
 }
 
